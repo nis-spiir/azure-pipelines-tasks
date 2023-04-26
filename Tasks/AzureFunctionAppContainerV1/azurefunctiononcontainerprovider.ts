@@ -24,6 +24,7 @@ export class AzureFunctionOnContainerDeploymentProvider{
     protected kuduServiceUtility: KuduServiceUtility;
     protected azureEndpoint: AzureEndpoint;
     protected activeDeploymentID;
+    protected isCentauri : boolean;
 
     constructor(taskParams: TaskParameters) {
         this.taskParams = taskParams;
@@ -43,37 +44,53 @@ export class AzureFunctionOnContainerDeploymentProvider{
         this.appServiceUtility = new AzureAppServiceUtility(this.appService);
         this.appServiceUtilityExt = new AzureAppServiceUtilityExt(this.appService);
         this.taskParams.isLinuxContainerApp = true;
-        this.kuduService = await this.appServiceUtility.getKuduService();
-        this.kuduServiceUtility = new KuduServiceUtility(this.kuduService);
+        this.isCentauri = await this.appServiceUtilityExt.isFunctionAppOnCentauri();
+        if (!this.isCentauri){
+            this.kuduService = await this.appServiceUtility.getKuduService();
+            this.kuduServiceUtility = new KuduServiceUtility(this.kuduService);
+        }
         tl.debug(`Resource Group: ${this.taskParams.ResourceGroupName}`);
         tl.debug(`is Linux container web app: ${this.taskParams.isLinuxContainerApp}`);
     }
 
     public async DeployWebAppStep() {
         tl.debug("Performing container based deployment.");
-
         let containerDeploymentUtility: ContainerBasedDeploymentUtility = new ContainerBasedDeploymentUtility(this.appService);
-        await containerDeploymentUtility.deployWebAppImage(this.taskParams);
-        let linuxFunctionStorageSetting: string = '';
-        if (!this.taskParams.AppSettings || this.taskParams.AppSettings.indexOf(linuxFunctionStorageSettingName) < 0) {
-            linuxFunctionStorageSetting = `${linuxFunctionStorageSettingName} ${linuxFunctionStorageSettingValue}`;
-        }
-        this.taskParams.AppSettings = this.taskParams.AppSettings ? this.taskParams.AppSettings.trim() + " " + linuxFunctionStorageSetting : linuxFunctionStorageSetting;
-        let customApplicationSettings = ParameterParser.parse(this.taskParams.AppSettings);
-        await this.appServiceUtility.updateAndMonitorAppSettings(customApplicationSettings);
 
-        await this.appServiceUtilityExt.updateScmTypeAndConfigurationDetails();
+        if (this.isCentauri){
+            await containerDeploymentUtility.deployWebAppImage(this.taskParams, false);
+            let linuxFunctionStorageSetting: string = ''; 
+            if (!this.taskParams.AppSettings || this.taskParams.AppSettings.indexOf(linuxFunctionStorageSettingName) < 0) { 
+                linuxFunctionStorageSetting = `${linuxFunctionStorageSettingName} ${linuxFunctionStorageSettingValue}`; 
+            }
+            this.taskParams.AppSettings = this.taskParams.AppSettings ? this.taskParams.AppSettings.trim() + " " + linuxFunctionStorageSetting : linuxFunctionStorageSetting;
+            let customApplicationSettings = ParameterParser.parse(this.taskParams.AppSettings);
+            await this.appServiceUtilityExt.updateAndMonitorAppSettingsCentauri(customApplicationSettings, false);
+        } else {
+            await containerDeploymentUtility.deployWebAppImage(this.taskParams);
+            let linuxFunctionStorageSetting: string = '';
+            if (!this.taskParams.AppSettings || this.taskParams.AppSettings.indexOf(linuxFunctionStorageSettingName) < 0) {
+                linuxFunctionStorageSetting = `${linuxFunctionStorageSettingName} ${linuxFunctionStorageSettingValue}`;
+            }
+            this.taskParams.AppSettings = this.taskParams.AppSettings ? this.taskParams.AppSettings.trim() + " " + linuxFunctionStorageSetting : linuxFunctionStorageSetting;
+            let customApplicationSettings = ParameterParser.parse(this.taskParams.AppSettings);
+            await this.appServiceUtility.updateAndMonitorAppSettings(customApplicationSettings);
+
+            await this.appServiceUtilityExt.updateScmTypeAndConfigurationDetails();
+        }
     }
 
     public async UpdateDeploymentStatus(isDeploymentSuccess: boolean) {
-        if(this.kuduServiceUtility) {
-            await addReleaseAnnotation(this.azureEndpoint, this.appService, isDeploymentSuccess);
-            this.activeDeploymentID = await this.kuduServiceUtility.updateDeploymentStatus(isDeploymentSuccess, null, {'type': 'Deployment', slotName: this.appService.getSlot()});
-            tl.debug('Active DeploymentId :'+ this.activeDeploymentID);
-        }
+        if (!this.isCentauri){
+            if(this.kuduServiceUtility) {
+                await addReleaseAnnotation(this.azureEndpoint, this.appService, isDeploymentSuccess);
+                this.activeDeploymentID = await this.kuduServiceUtility.updateDeploymentStatus(isDeploymentSuccess, null, {'type': 'Deployment', slotName: this.appService.getSlot()});
+                tl.debug('Active DeploymentId :'+ this.activeDeploymentID);
+            }
 
-        let appServiceApplicationUrl: string = await this.appServiceUtility.getApplicationURL();
-        console.log(tl.loc('AppServiceApplicationURL', appServiceApplicationUrl));
-        tl.setVariable('AppServiceApplicationUrl', appServiceApplicationUrl);
+            let appServiceApplicationUrl: string = await this.appServiceUtility.getApplicationURL();
+            console.log(tl.loc('AppServiceApplicationURL', appServiceApplicationUrl));
+            tl.setVariable('AppServiceApplicationUrl', appServiceApplicationUrl);
+        }
     }
 }
